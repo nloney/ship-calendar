@@ -2,11 +2,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase-browser';
 import { trackingUrl, carrierLabel } from '@/lib/carriers';
+import { Packing, packingSummary } from '@/lib/packing';
+import { isoAddDays } from '@/lib/dates';
 
 type Ev = {
   id: string; title: string; event_date: string; ship_date: string;
-  notes: string; color: string; tracking_number: string; carrier: string; is_local: boolean;
+  notes: string; color: string; tracking_number: string; carrier: string; is_local: boolean; packing: Partial<Packing> | null;
+  status: 'pending' | 'packed' | 'shipped' | null;
 };
+
+const isDone = (e: Ev) => e.status === 'shipped' || (e.is_local && e.status === 'packed');
 
 const fmt = (d: Date) => d.toISOString().slice(0, 10);
 const prettyShort = (iso: string) =>
@@ -24,21 +29,28 @@ export default function Board() {
 
   useEffect(() => { load(); }, [load]);
 
-  // clock + safety re-fetch every 5 min (in case realtime drops on a long-running TV)
+  // clock + re-fetch every minute (the board reads a view, so there is no realtime feed)
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 30_000);
-    const poll = setInterval(load, 5 * 60_000);
+    const poll = setInterval(load, 60_000);
     return () => { clearInterval(clock); clearInterval(poll); };
   }, [load]);
 
-  // live updates
-  useEffect(() => {
-    const ch = supabase
-      .channel('board-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, load)
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [supabase, load]);
+  // Status changes need the team PIN; it is kept for this browser tab only.
+  async function setStatus(id: string, status: 'pending' | 'packed' | 'shipped') {
+    let pin = '';
+    try { pin = sessionStorage.getItem('boardPin') || ''; } catch { /* storage blocked */ }
+    if (!pin) pin = prompt('Team PIN to change status:') || '';
+    if (!pin) return;
+    const res = await fetch('/api/board/status', { method: 'POST', body: JSON.stringify({ id, status, pin }) });
+    if (res.ok) {
+      try { sessionStorage.setItem('boardPin', pin); } catch { /* storage blocked */ }
+      load();
+    } else {
+      try { sessionStorage.removeItem('boardPin'); } catch { /* storage blocked */ }
+      window.alert((await res.json().catch(() => ({}))).error || 'Could not save.');
+    }
+  }
 
   const todayIso = fmt(now);
   const view = now;
@@ -53,11 +65,12 @@ export default function Board() {
     if (ev.ship_date) (byDate[ev.ship_date] ||= []).push({ ev, kind: 'ship' });
   });
 
-  const shipsToday = events.filter(e => e.ship_date === todayIso);
+  const shipsToday = events.filter(e => e.ship_date === todayIso && !isDone(e));
   const upcoming = events
-    .filter(e => e.ship_date >= todayIso)
+    .filter(e => e.ship_date >= todayIso || (!isDone(e) && e.ship_date >= isoAddDays(todayIso, -14)))
     .sort((a, b) => a.ship_date.localeCompare(b.ship_date))
     .slice(0, 8);
+  const overdue = (e: Ev) => e.ship_date < todayIso && !isDone(e);
 
   return (
     <div style={page}>
@@ -127,11 +140,22 @@ export default function Board() {
                     </span>
                     {e.title}
                   </span>
-                  <span style={{ fontSize: 15, color: isToday ? '#ffd54f' : '#9aa0a6', fontWeight: isToday ? 600 : 400 }}>
-                    {isToday ? 'TODAY' : prettyShort(e.ship_date)}
+                  <span style={{ fontSize: 15, color: isDone(e) ? '#81c995' : overdue(e) ? '#f28b82' : isToday ? '#ffd54f' : '#9aa0a6', fontWeight: isToday || overdue(e) ? 600 : 400 }}>
+                    {isDone(e) ? '✅ ' + (e.status === 'shipped' ? 'Shipped' : 'Packed') : overdue(e) ? 'OVERDUE ' + prettyShort(e.ship_date) : isToday ? 'TODAY' : prettyShort(e.ship_date)}
                   </span>
                 </div>
                 {e.notes && <div style={{ fontSize: 14, color: '#bdc1c6', marginTop: 2 }}>{e.notes}</div>}
+                {packingSummary(e.packing).map(line => (
+                  <div key={line} style={{ fontSize: 13, color: '#9aa0a6', marginTop: 2 }}>{line}</div>
+                ))}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  {e.status !== 'packed' && e.status !== 'shipped' &&
+                    <button style={sbtn} onClick={() => setStatus(e.id, 'packed')}>Mark packed</button>}
+                  {!e.is_local && e.status !== 'shipped' &&
+                    <button style={sbtn} onClick={() => setStatus(e.id, 'shipped')}>Mark shipped</button>}
+                  {(e.status === 'packed' || e.status === 'shipped') &&
+                    <button style={{ ...sbtn, color: '#9aa0a6' }} onClick={() => setStatus(e.id, 'pending')}>Undo</button>}
+                </div>
                 {!e.is_local && e.tracking_number && (
                   <div style={{ fontSize: 14, marginTop: 4 }}>
                     <span style={{ color: '#9aa0a6' }}>{carrierLabel(e.carrier)}: </span>
@@ -162,4 +186,5 @@ const todayNum: React.CSSProperties = { background: '#8ab4f8', color: '#202124',
 const pill: React.CSSProperties = { fontSize: 14, padding: '3px 8px', borderRadius: 5, margin: '3px 0', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
 const sidePanel: React.CSSProperties = { padding: '14px 18px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 };
 const panelTitle: React.CSSProperties = { fontSize: 18, fontWeight: 500, color: '#9aa0a6', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 4 };
+const sbtn: React.CSSProperties = { background: '#3c4043', color: '#e8eaed', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 14, cursor: 'pointer' };
 const shipRow: React.CSSProperties = { background: '#2a2b2e', borderRadius: 8, padding: '10px 12px' };

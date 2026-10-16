@@ -26,7 +26,8 @@ export async function middleware(request: NextRequest) {
     path.startsWith('/login') ||
     path.startsWith('/auth') ||
     path.startsWith('/board') ||
-    path.startsWith('/api/cron');
+    path.startsWith('/api/cron') ||
+    path === '/api/board/status';
 
   if (!user && !isPublic) {
     return NextResponse.redirect(new URL('/login', request.url));

@@ -2,13 +2,19 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase-browser';
 import { isoAddDays, DEFAULT_LEAD_DAYS } from '@/lib/dates';
+import { BOOTHS, BANNERS, CARDS, OTHER, Packing, defaultPacking, normalizePacking } from '@/lib/packing';
 
 const COLORS = ['#1a73e8', '#d50000', '#33b679', '#f4511e', '#8e24aa', '#e67c73', '#f6bf26', '#0b8043'];
 
 type Ev = {
   id: string; title: string; event_date: string; ship_date: string;
-  notes: string; color: string; tracking_number: string; carrier: string; is_local: boolean;
+  notes: string; color: string; tracking_number: string; carrier: string; is_local: boolean; packing: Partial<Packing> | null;
+  ship_address: string; status: 'pending' | 'packed' | 'shipped' | null; status_at: string | null; status_by: string | null;
 };
+type Audit = { id: string; action: string; changed_by: string; changes: Record<string, { from: unknown; to: unknown }>; created_at: string };
+
+const isDone = (e: Ev) => e.status === 'shipped' || (e.is_local && e.status === 'packed');
+const show = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v)) || '(empty)';
 
 const fmt = (d: Date) => d.toISOString().slice(0, 10);
 
@@ -19,6 +25,7 @@ export default function Calendar() {
   const [editing, setEditing] = useState<Ev | null>(null);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Partial<Ev>>({});
+  const [history, setHistory] = useState<Audit[]>([]);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteMsg, setInviteMsg] = useState('');
@@ -43,18 +50,23 @@ export default function Calendar() {
   function openNew(dateIso?: string) {
     const d = dateIso || fmt(new Date());
     setEditing(null);
-    setForm({ title: '', event_date: d, ship_date: isoAddDays(d, -DEFAULT_LEAD_DAYS), notes: '', color: COLORS[0], is_local: false });
+    setForm({ title: '', event_date: d, ship_date: isoAddDays(d, -DEFAULT_LEAD_DAYS), notes: '', color: COLORS[0], is_local: false, packing: defaultPacking(), ship_address: '', status: 'pending' });
+    setHistory([]);
     setOpen(true);
   }
-  function openEdit(ev: Ev) { setEditing(ev); setForm({ ...ev }); setOpen(true); }
+  function openEdit(ev: Ev) { setEditing(ev); setForm({ ...ev, packing: normalizePacking(ev.packing) }); setOpen(true);
+    setHistory([]);
+    fetch(`/api/audit?event_id=${ev.id}`).then(r => r.ok ? r.json() : []).then(setHistory);
+  }
+  const pack = normalizePacking(form.packing);
+  const setPack = (patch: Partial<Packing>) => setForm({ ...form, packing: { ...pack, ...patch } });
 
   async function submit() {
     if (!form.title || !form.event_date) { alert('Title and event date required.'); return; }
-    if (editing) {
-      await fetch('/api/events', { method: 'PATCH', body: JSON.stringify({ id: editing.id, ...form }) });
-    } else {
-      await fetch('/api/events', { method: 'POST', body: JSON.stringify(form) });
-    }
+    const res = editing
+      ? await fetch('/api/events', { method: 'PATCH', body: JSON.stringify({ id: editing.id, ...form }) })
+      : await fetch('/api/events', { method: 'POST', body: JSON.stringify(form) });
+    if (!res.ok) { alert((await res.json().catch(() => ({}))).error || 'Could not save.'); return; }
     setOpen(false); loadEvents();
   }
   async function remove() {
@@ -88,7 +100,7 @@ export default function Calendar() {
   const cells = Array.from({ length: 42 }, (_, i) => {
     const d = new Date(start); d.setDate(start.getDate() + i); return d;
   });
-  const dueToday = events.filter(e => e.ship_date === todayIso);
+  const dueToday = events.filter(e => e.ship_date === todayIso && !isDone(e));
 
   return (
     <div>
@@ -138,7 +150,7 @@ export default function Calendar() {
                     ...pill, background: it.ev.color,
                     border: it.kind === 'ship' ? '1.5px dashed rgba(255,255,255,.8)' : 'none',
                   }}>
-                  {it.kind === 'ship' ? (it.ev.is_local ? '📦 PACK: ' : '🚚 SHIP: ') : ''}{it.ev.title}
+                  {it.kind === 'ship' ? (isDone(it.ev) ? '✅ DONE: ' : it.ev.is_local ? '📦 PACK: ' : '🚚 SHIP: ') : ''}{it.ev.title}
                 </div>
               ))}
             </div>
@@ -148,7 +160,7 @@ export default function Calendar() {
 
       {open && (
         <div style={overlay} onClick={e => { if (e.target === e.currentTarget) setOpen(false); }}>
-          <div style={modal}>
+          <div style={{ ...modal, maxHeight: '90vh', overflowY: 'auto' }}>
             <h2 style={{ fontWeight: 400 }}>{editing ? 'Edit event' : 'Add event'}</h2>
             <Field label="Title">
               <input style={inp} value={form.title || ''} onChange={e => setForm({ ...form, title: e.target.value })} />
@@ -164,9 +176,62 @@ export default function Calendar() {
                 Local event (pack instead of ship)
               </label>
             </div>
+            <Field label="Status">
+              <select style={inp} value={form.status || 'pending'}
+                onChange={e => setForm({ ...form, status: e.target.value as Ev['status'] })}>
+                <option value="pending">Not started</option>
+                <option value="packed">Packed</option>
+                {!form.is_local && <option value="shipped">Shipped</option>}
+              </select>
+            </Field>
+            {!form.is_local && (
+              <Field label="Ship to address">
+                <textarea style={{ ...inp, minHeight: 70 }} value={form.ship_address || ''}
+                  placeholder={'Name / Company\nStreet\nCity, State ZIP'}
+                  onChange={e => setForm({ ...form, ship_address: e.target.value })} />
+              </Field>
+            )}
             <Field label={form.is_local ? 'Notes (what needs to be packed)' : 'Notes (what needs to ship)'}>
               <textarea style={{ ...inp, minHeight: 60 }} value={form.notes || ''}
                 onChange={e => setForm({ ...form, notes: e.target.value })} />
+            </Field>
+            <Field label="Booth">
+              <Radios name="booth" options={BOOTHS} value={pack.booth} onChange={booth => setPack({ booth })}
+                otherText={pack.booth_other} onOtherText={booth_other => setPack({ booth_other })} />
+            </Field>
+            <Field label="Banners">
+              {BANNERS.map(b => (
+                <label key={b} style={chk}>
+                  <input type="checkbox" checked={pack.banners.includes(b)}
+                    onChange={e => setPack({ banners: e.target.checked ? [...pack.banners, b] : pack.banners.filter(x => x !== b) })} />
+                  {b}
+                </label>
+              ))}
+              <input style={{ ...inp, marginTop: 6 }} placeholder="Other banner" value={pack.banners_other}
+                onChange={e => setPack({ banners_other: e.target.value })} />
+            </Field>
+            <Field label="Business cards">
+              <Radios name="card" options={CARDS} value={pack.card} onChange={card => setPack({ card })}
+                otherText={pack.card_other} onOtherText={card_other => setPack({ card_other })} />
+              <input style={{ ...inp, marginTop: 6, width: 90 }} placeholder="Count" value={pack.card_count}
+                onChange={e => setPack({ card_count: e.target.value })} />
+            </Field>
+            <Field label="What documents to include in the folders">
+              <textarea style={{ ...inp, minHeight: 60 }} value={pack.docs}
+                onChange={e => setPack({ docs: e.target.value })} />
+            </Field>
+            <Field label="Swag box">
+              {pack.swag.map((s, i) => (
+                <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <input type="checkbox" checked={s.include}
+                    onChange={e => setPack({ swag: pack.swag.map((x, j) => j === i ? { ...x, include: e.target.checked } : x) })} />
+                  <span style={{ flex: 1, fontSize: 14 }}>{s.name}</span>
+                  <input style={{ ...inp, width: 70, padding: '4px 8px' }} value={s.count}
+                    onChange={e => setPack({ swag: pack.swag.map((x, j) => j === i ? { ...x, count: e.target.value } : x) })} />
+                </div>
+              ))}
+              <input style={{ ...inp, marginTop: 6 }} placeholder="Other swag (e.g. Water bottles (20))" value={pack.swag_other}
+                onChange={e => setPack({ swag_other: e.target.value })} />
             </Field>
             <Field label={form.is_local
               ? 'Pack date (auto: 1 week before — editable)'
@@ -200,6 +265,22 @@ export default function Calendar() {
                 ))}
               </div>
             </Field>
+            {editing && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ fontSize: 13, color: '#5f6368', cursor: 'pointer' }}>Change history ({history.length})</summary>
+                {history.length === 0 && <p style={{ fontSize: 12, color: '#70757a' }}>No changes recorded yet.</p>}
+                {history.map(h => (
+                  <div key={h.id} style={{ fontSize: 12, borderLeft: '3px solid #dadce0', padding: '4px 8px', margin: '8px 0' }}>
+                    <strong>{h.action}</strong> by {h.changed_by} on {new Date(h.created_at).toLocaleString()}
+                    {Object.entries(h.changes || {}).map(([k, v]) => (
+                      <div key={k} style={{ color: '#5f6368', wordBreak: 'break-word' }}>
+                        {k}: {v && typeof v === 'object' && 'to' in v ? `${show(v.from).slice(0, 80)} → ${show(v.to).slice(0, 80)}` : show(v)}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </details>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
               {editing ? <button style={{ ...btn, color: '#d93025', borderColor: '#d93025' }} onClick={remove}>Delete</button> : <span />}
               <div style={{ display: 'flex', gap: 8 }}>
@@ -243,6 +324,27 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function Radios({ name, options, value, onChange, otherText, onOtherText }: {
+  name: string; options: string[]; value: string; onChange: (v: string) => void;
+  otherText: string; onOtherText: (v: string) => void;
+}) {
+  return (
+    <div>
+      {[...options, OTHER].map(o => (
+        <label key={o} style={chk}>
+          <input type="radio" name={name} checked={value === o} onChange={() => onChange(o)} />
+          {o}
+        </label>
+      ))}
+      {value === OTHER && (
+        <input style={{ ...inp, marginTop: 6 }} placeholder="Describe" value={otherText}
+          onChange={e => onOtherText(e.target.value)} />
+      )}
+    </div>
+  );
+}
+
+const chk: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, marginBottom: 4, cursor: 'pointer' };
 const hdr: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 20px', borderBottom: '1px solid #dadce0', flexWrap: 'wrap' };
 const btn: React.CSSProperties = { border: '1px solid #dadce0', background: '#fff', borderRadius: 4, padding: '8px 14px', fontSize: 14, cursor: 'pointer' };
 const ibtn: React.CSSProperties = { border: 'none', background: 'none', fontSize: 20, cursor: 'pointer', width: 34, height: 34, borderRadius: '50%' };

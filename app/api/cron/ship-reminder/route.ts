@@ -5,7 +5,8 @@ import { todayIso } from '@/lib/dates';
 // Vercel Cron calls this daily. Protected by CRON_SECRET so nobody else can trigger it.
 export async function GET(req: Request) {
   const auth = req.headers.get('authorization');
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || auth !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
