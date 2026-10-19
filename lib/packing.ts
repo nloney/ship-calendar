@@ -20,7 +20,7 @@ const DEFAULT_SWAG = [
 
 export type SwagItem = { name: string; count: string; include: boolean };
 export type Packing = {
-  booth: string; booth_other: string;
+  booths: Record<string, string>; booth_other: string; booth_other_count: string;  // name -> count
   banners: string[]; banners_other: string;
   card: string; card_other: string; card_count: string;
   docs: string;
@@ -29,7 +29,7 @@ export type Packing = {
 
 export function defaultPacking(): Packing {
   return {
-    booth: '', booth_other: '',
+    booths: {}, booth_other: '', booth_other_count: '1',
     banners: [], banners_other: '',
     card: '', card_other: '', card_count: '50',
     docs: '',
@@ -40,15 +40,23 @@ export function defaultPacking(): Packing {
 
 // Fills gaps so rows saved before a field existed still load.
 export function normalizePacking(p: Partial<Packing> | null | undefined): Packing {
-  return { ...defaultPacking(), ...(p || {}) };
+  const { booth, ...rest } = (p || {}) as Partial<Packing> & { booth?: string };
+  const n = { ...defaultPacking(), ...rest };
+  // events saved when booth was a single choice
+  if (booth && !rest.booths) {
+    if (booth === OTHER) n.booth_other_count = '1';
+    else n.booths = { [booth]: '1' };
+  }
+  return n;
 }
 
 export function packingSummary(p: Partial<Packing> | null | undefined): string[] {
   if (!p || !Object.keys(p).length) return [];
   const n = normalizePacking(p);
   const out: string[] = [];
-  const booth = n.booth === OTHER ? n.booth_other : n.booth;
-  if (booth) out.push(`Booth: ${booth}`);
+  const booths = Object.entries(n.booths).map(([name, c]) => `${name} x${c || 1}`);
+  if (n.booth_other) booths.push(`${n.booth_other} x${n.booth_other_count || 1}`);
+  if (booths.length) out.push(`Booths: ${booths.join(', ')}`);
   const banners = [...n.banners, ...(n.banners_other ? [n.banners_other] : [])];
   if (banners.length) out.push(`Banners: ${banners.join(', ')}`);
   const card = n.card === OTHER ? n.card_other : n.card;

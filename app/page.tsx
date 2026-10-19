@@ -195,9 +195,30 @@ export default function Calendar() {
               <textarea style={{ ...inp, minHeight: 60 }} value={form.notes || ''}
                 onChange={e => setForm({ ...form, notes: e.target.value })} />
             </Field>
-            <Field label="Booth">
-              <Radios name="booth" options={BOOTHS} value={pack.booth} onChange={booth => setPack({ booth })}
-                otherText={pack.booth_other} onOtherText={booth_other => setPack({ booth_other })} />
+            <Field label="Booths (pick any, set how many of each)">
+              {BOOTHS.map(b => {
+                const on = b in pack.booths;
+                return (
+                  <div key={b} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <label style={{ ...chk, flex: 1, marginBottom: 0 }}>
+                      <input type="checkbox" checked={on}
+                        onChange={e => {
+                          const { [b]: _drop, ...rest } = pack.booths;
+                          setPack({ booths: e.target.checked ? { ...pack.booths, [b]: '1' } : rest });
+                        }} />
+                      {b}
+                    </label>
+                    {on && <input type="number" min={1} aria-label={`${b} count`} style={{ ...inp, width: 70, padding: '4px 8px' }}
+                      value={pack.booths[b]} onChange={e => setPack({ booths: { ...pack.booths, [b]: e.target.value } })} />}
+                  </div>
+                );
+              })}
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <input style={inp} placeholder="Other booth" value={pack.booth_other}
+                  onChange={e => setPack({ booth_other: e.target.value })} />
+                {pack.booth_other && <input type="number" min={1} aria-label="Other booth count" style={{ ...inp, width: 70 }}
+                  value={pack.booth_other_count} onChange={e => setPack({ booth_other_count: e.target.value })} />}
+              </div>
             </Field>
             <Field label="Banners">
               {BANNERS.map(b => (
